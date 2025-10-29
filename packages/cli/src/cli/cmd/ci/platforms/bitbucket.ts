@@ -37,23 +37,38 @@ export class BitbucketPlatformKit extends PlatformKit<BitbucketConfig> {
   }
 
   async getOpenPullRequestNumber({ branch }: { branch: string }) {
-    return await this.bb.repositories
-      .listPullRequests({
-        workspace: this.platformConfig.repositoryOwner,
-        repo_slug: this.platformConfig.repositoryName,
-        state: "OPEN",
-      })
-      .then(({ data: { values } }) => {
-        // TODO: we might need to handle pagination in future
-        // bitbucket API does not support filtering pull requests
-        // https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/#api-repositories-workspace-repo-slug-pullrequests-get
-        return values?.find(
-          ({ source, destination }) =>
-            source?.branch?.name === branch &&
-            destination?.branch?.name === this.platformConfig.baseBranchName,
-        );
-      })
-      .then((pr) => pr?.id);
+    const requestBase = {
+      workspace: this.platformConfig.repositoryOwner,
+      repo_slug: this.platformConfig.repositoryName,
+      state: "OPEN" as const,
+      // Fetch more items per page to reduce round-trips
+      pagelen: 50 as const,
+    };
+
+    let page = 1;
+    // Bitbucket paginates results; follow pages until we find a match or run out
+    // https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/#api-repositories-workspace-repo-slug-pullrequests-get
+    // `next` indicates there are more pages
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { data } = await this.bb.repositories.listPullRequests({
+        ...(requestBase as any),
+        page,
+      } as any);
+
+      const values = (data as any)?.values as Array<any> | undefined;
+      const match = values?.find(
+        ({ source, destination }) =>
+          source?.branch?.name === branch &&
+          destination?.branch?.name === this.platformConfig.baseBranchName,
+      );
+      if (match) return match.id as number;
+
+      if (!(data as any)?.next) break;
+      page += 1;
+    }
+
+    return undefined;
   }
 
   async closePullRequest({ pullRequestNumber }: { pullRequestNumber: number }) {
